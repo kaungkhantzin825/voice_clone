@@ -5,10 +5,18 @@ import numpy as np
 import shutil
 import re
 from datetime import datetime
-import gradio as gr
-from voxcpm import VoxCPM
+import time
+import urllib.request
+from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi.responses import FileResponse
+from pydantic import BaseModel
+import uvicorn
+from pyngrok import ngrok
+
+app = FastAPI(title="VoxCPM Asynchronous API")
 
 print("🔄 Loading VoxCPM model...")
+from voxcpm import VoxCPM
 model = VoxCPM.from_pretrained("openbmb/VoxCPM2", load_denoiser=False)
 print("✅ Model loaded successfully!")
 
@@ -16,28 +24,25 @@ OUTPUT_DIR = "/kaggle/working/outputs"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs("/tmp", exist_ok=True)
 
-def run_long_tts(text_input, audio_path, prompt_text):
-    if not text_input or not text_input.strip():
-        raise gr.Error("ကျေးဇူးပြု၍ ထုတ်ယူလိုသော စာသားကို ထည့်ပါ။")
-    if not audio_path:
-        raise gr.Error("ကျေးဇူးပြု၍ Reference အသံဖိုင်ကို တင်ပါ။")
-    if not prompt_text or not prompt_text.strip():
-        raise gr.Error("ကျေးဇူးပြု၍ Reference Text ကို ထည့်ပါ။")
+class TTSRequest(BaseModel):
+    text_input: str
+    prompt_text: str
+    audio_path: str
 
+def generate_audio_task(text_input: str, audio_path: str, prompt_text: str, filename: str):
+    start_time = time.time()
     try:
         torch.cuda.empty_cache()
-        
         sentences = re.split(r'([။\\.?!\\n]+)', text_input.strip())
         target_chunks = [s.strip() for s in sentences if s.strip()]
         if not target_chunks:
             target_chunks = [text_input.strip()]
 
-        all_wavs = []
         sample_rate = getattr(getattr(model, "tts_model", None), "sample_rate", 48000)
         silence = np.zeros(int(sample_rate * 0.25), dtype=np.float32)
+        all_wavs = []
 
-        print(f"🔄 စာသားများကို အပိုင်း {len(target_chunks)} ပိုင်းခွဲ၍ အသံထုတ်နေပါပြီ...")
-
+        print(f"🔄 Background ဖြင့် အသံစတင်ထုတ်နေပါပြီ ({filename})...")
         for chunk in target_chunks:
             with torch.no_grad():
                 wav_chunk = model.generate(
@@ -51,57 +56,63 @@ def run_long_tts(text_input, audio_path, prompt_text):
                     wav_chunk = wav_chunk.detach().cpu().numpy()
                 if wav_chunk.ndim > 1:
                     wav_chunk = wav_chunk.squeeze()
-            
             all_wavs.append(wav_chunk)
             all_wavs.append(silence)
             torch.cuda.empty_cache()
 
-        if not all_wavs:
-            raise gr.Error("အသံထုတ်လုပ်ရန် အချက်အလက် မရှိပါ။")
-
         final_wav_np = np.concatenate(all_wavs)
+        file_path = os.path.join(OUTPUT_DIR, filename)
+        sf.write(file_path, final_wav_np, sample_rate)
         
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"long_clone_{ts}.wav"
-        
-        gradio_temp_path = os.path.join("/tmp", filename)
-        sf.write(gradio_temp_path, final_wav_np, sample_rate)
-
-        output_path = os.path.join(OUTPUT_DIR, filename)
-        shutil.copy(gradio_temp_path, output_path)
-        print(f"📁 အသံဖိုင်ကို သိမ်းပြီးပါပြီ: {output_path}")
-
-        return gradio_temp_path
-
+        elapsed = time.time() - start_time
+        print(f"✅ အသံဖိုင် ပြီးဆုံးပါပြီ: {filename} (ကြာချိန်: {elapsed:.2f}s)")
     except Exception as e:
-        print(f"Error occurred: {str(e)}")
-        raise gr.Error(f"အမှားအယွင်း ဖြစ်ပေါ်သည်: {str(e)}")
+        print(f"❌ Error in background task: {str(e)}")
 
-# Gradio Interface (api_name ကို ရှင်းလင်းစွာ သတ်မှတ်ပေးခြင်း)
-with gr.Blocks(title="VoxCPM Long-Form Voice Cloning") as demo:
-    gr.Markdown("# 🎙️ VoxCPM Long-Form Voice Cloning API")
-    with gr.Row():
-        with gr.Column():
-            text_input = gr.Textbox(label="စာသားအရှည် ထည့်ရန်", lines=10)
-            audio_input = gr.Audio(label="Reference အသံဖိုင် (WAV)", type="filepath")
-            prompt_text_input = gr.Textbox(label="Reference Text (အသံဖိုင်ထဲပါသော စာသား)")
-            submit_btn = gr.Button("🚀 အသံဖိုင် ထုတ်လုပ်မည်", variant="primary")
-        with gr.Column():
-            audio_output = gr.Audio(label="ထွက်လာသော အသံဖိုင်", interactive=False)
+@app.post("/api/v1/generate")
+def create_tts(request: TTSRequest, background_tasks: BackgroundTasks):
+    if not request.text_input.strip():
+        raise HTTPException(status_code=400, detail="စာသား ထည့်ပေးပါ")
+    
+    local_audio_path = request.audio_path
+    if request.audio_path.startswith("http"):
+        try:
+            local_audio_path = "/tmp/ref_audio.wav"
+            urllib.request.urlretrieve(request.audio_path, local_audio_path)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Cloudinary လင်ခ်မှ အသံဖိုင် ဒေါင်းလုပ်ဆွဲမရပါ: {str(e)}")
 
-    # ဤနေရာတွင် api_name="run_long_tts" ကို တိကျစွာ ချိတ်ဆက်ပေးထားပါသည်
-    submit_btn.click(
-        fn=run_long_tts, 
-        inputs=[text_input, audio_input, prompt_text_input], 
-        outputs=[audio_output],
-        api_name="run_long_tts"
-    )
+    if not os.path.exists(local_audio_path):
+        raise HTTPException(status_code=400, detail="Reference အသံဖိုင် ရှာမတွေ့ပါ။")
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"long_clone_{ts}.wav"
+    estimated_time = round(len(request.text_input) * 0.12, 2)
+
+    background_tasks.add_task(generate_audio_task, request.text_input, local_audio_path, request.prompt_text, filename)
+
+    # 🚀 ဖိုင်နာမည်ကို ချက်ချင်း Return ပြန်မည် (Time-out လုံးဝမရှိပါ)
+    return {
+        "status": "processing",
+        "file_name": filename,
+        "estimated_duration_seconds": estimated_time
+    }
+
+@app.get("/api/v1/download/{filename}")
+def get_audio(filename: str):
+    file_path = os.path.join(OUTPUT_DIR, filename)
+    if os.path.exists(file_path):
+        return FileResponse(file_path, media_type="audio/wav", filename=filename)
+    else:
+        raise HTTPException(status_code=404, detail="ဖိုင် ရှာမတွေ့သေးပါ (သို့မဟုတ် အသံထုတ်လုပ်နေဆဲ ဖြစ်ပါသည်)")
 
 if __name__ == "__main__":
-    demo.queue(max_size=10, default_concurrency_limit=2).launch(share=True, debug=True)
+    public_url = ngrok.connect(7860)
+    print(f"\\n🌍 PUBLIC API URL: {public_url}\\n")
+    uvicorn.run(app, host="0.0.0.0", port=7860)
 '''
 
 with open("app_api.py", "w", encoding="utf-8") as f:
     f.write(code_content)
 
-print("✅ app_api.py ကို အောင်မြင်စွာ ပြင်ဆင်ပြီးပါပြီ။")
+print("✅ app_api.py အသစ် အဆင်သင့်ဖြစ်ပါပြီ။")
