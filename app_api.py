@@ -13,6 +13,9 @@ from pydantic import BaseModel
 import uvicorn
 from pyngrok import ngrok
 
+# 🔑 ngrok authtoken ကို ကုဒ်ထဲတွင် တိုက်ရိုက်ထည့်သွင်းခြင်း
+ngrok.set_auth_token("3M2PsrjjoADbZH2daFyUpPy1Ebz_4pwp6SLMDvnEoN1xxQEzN")
+
 app = FastAPI(title="VoxCPM Asynchronous API")
 
 print("🔄 Loading VoxCPM model...")
@@ -115,4 +118,4 @@ if __name__ == "__main__":
 with open("app_api.py", "w", encoding="utf-8") as f:
     f.write(code_content)
 
-print("✅ app_api.py အသစ် အဆင်သင့်ဖြစ်ပါပြီ။")
+print("✅ app_api.py ထဲသို့ ngrok key ထည့်သွင်းပြီးပါပြီ။")
