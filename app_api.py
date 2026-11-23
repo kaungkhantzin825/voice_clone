@@ -40,7 +40,10 @@ os.makedirs(REF_DIR, exist_ok=True)
 
 
 # 🔑 ngrok authtoken (environment variable / Kaggle Secret မရှိရင် ဒါကို သုံးမည်)
-NGROK_TOKEN = "3M2PsrjjoADbZH2daFyUpPy1Ebz_4pwp6SLMDvnEoN1xxQEzN"
+
+NGROK_TOKEN = "3MWFFr6f6RIsTeywJbF66uy3nIi_79a3YLWmtzhYyc4EPCDJY"
+
+# NGROK_TOKEN = "3M2PsrjjoADbZH2daFyUpPy1Ebz_4pwp6SLMDvnEoN1xxQEzN"
 
 
 def get_ngrok_token() -> str:
